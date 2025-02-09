@@ -1,7 +1,7 @@
 import { IRequest, json, status } from 'itty-router'
 import { generateSignature, decrypt } from '../utils'
 
-export const download = async ({ headers, cf, urlHASH, query }: IRequest) => {
+export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: Env) => {
     const signature = query?.sig
     if (!signature) {
         return status(404)
@@ -17,12 +17,12 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest) => {
         headers.get('remote-addr') ||
         '77.96.243.165'
 
-    const localSignature = await generateSignature(userIP)
+    const localSignature = await generateSignature(userIP, env.SECRET)
     if (signature !== localSignature) {
         return status(404)
     }
 
-    const decodedURL = await decrypt(urlHASH.replace(/-/g, '+').replace(/_/g, '/'))
+    const decodedURL = await decrypt(urlHASH.replace(/-/g, '+').replace(/_/g, '/'), env.SECRET, env.IV_SECRET)
     const url = new URL(decodedURL)
 
     const response = await fetch(url.toString(), {

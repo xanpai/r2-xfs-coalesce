@@ -1,11 +1,8 @@
-const SECRET = '5TxkrneszRLqNQww'
-const IV_SECRET = '5eszHgb_hey_2024'
-
-export async function generateSignature(ip: string) {
+export async function generateSignature(ip: string, secret: string) {
     const encoder = new TextEncoder()
 
     const key = await crypto.subtle.importKey(
-        'raw', encoder.encode(SECRET), { name: 'HMAC', hash: 'SHA-256' },
+        'raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' },
         false, ['sign']
     )
 
@@ -17,8 +14,8 @@ export async function generateSignature(ip: string) {
 }
 
 
-export const getKey = async () => {
-    const keyBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(SECRET))
+export const getKey = async (secret: string) => {
+    const keyBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret))
     const truncatedKeyBuffer = keyBuffer.slice(0, 16)
 
     return await crypto.subtle.importKey(
@@ -30,11 +27,11 @@ export const getKey = async () => {
     )
 }
 
-export const decrypt = async (content: string) => {
+export const decrypt = async (content: string, secret: string, iv_secret: string) => {
     console.log('decrypting', content)
 
-    const key = await getKey()
-    const iv = new TextEncoder().encode(IV_SECRET).slice(0, 16)
+    const key = await getKey(secret)
+    const iv = new TextEncoder().encode(iv_secret).slice(0, 16)
 
     const decoded = Uint8Array.from(atob(content), c => c.charCodeAt(0))
     const decrypted = await crypto.subtle.decrypt(
