@@ -26,27 +26,31 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         return status(404)
     }
 
-    // decrypt the URL
-    const decodedURL = await decrypt(urlHASH.replace(/-/g, '+').replace(/_/g, '/'), env.SECRET, env.IV_SECRET)
-    const url = new URL(decodedURL)
+    try {
+        // decrypt the URL
+        const decodedURL = await decrypt(urlHASH.replace(/-/g, '+').replace(/_/g, '/'), env.SECRET, env.IV_SECRET)
+        const url = new URL(decodedURL)
 
-    // fetch the file from the URL
-    const response = await fetch(url.toString(), {
-        method: 'GET'
-    })
+        // fetch the file from the URL
+        const response = await fetch(url.toString(), {
+            method: 'GET'
+        })
 
-    return new Response(response.body, {
-        status: response.status,
-        headers: {
-            'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
-            'Content-Disposition': response.headers.get('Content-Disposition') || 'attachment',
-            'Content-Length': response.headers.get('Content-Length') || '',
-            'Cache-Control': response.headers.get('Cache-Control') || 'public, max-age=3600',
-            'Expires': response.headers.get('Expires') || '',
-            'Last-Modified': response.headers.get('Last-Modified') || '',
-            'ETag': response.headers.get('ETag') || '',
-            'Content-Range': response.headers.get('Content-Range') || '',
-            'Accept-Ranges': response.headers.get('Accept-Ranges') || 'bytes'
-        }
-    })
+        return new Response(response.body, {
+            status: response.status,
+            headers: {
+                'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
+                'Content-Disposition': response.headers.get('Content-Disposition') || 'attachment',
+                'Content-Length': response.headers.get('Content-Length') || '',
+                'Cache-Control': response.headers.get('Cache-Control') || 'public, max-age=3600',
+                'Expires': response.headers.get('Expires') || '',
+                'Last-Modified': response.headers.get('Last-Modified') || '',
+                'ETag': response.headers.get('ETag') || '',
+                'Content-Range': response.headers.get('Content-Range') || '',
+                'Accept-Ranges': response.headers.get('Accept-Ranges') || 'bytes'
+            }
+        })
+    } catch (error) {
+        return status(404)
+    }
 }
