@@ -14,4 +14,4 @@ jobs:
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
         with:
-          command: deploy --name node
+          command: wrangler deploy --name node
