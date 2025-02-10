@@ -11,7 +11,7 @@ const router = AutoRouter({
 
 router
 	.get('/download/:urlHASH', download)
-	.get('/', () => status(404))
+	.all('*', () => status(404))
 
 
 export default { ...router }
