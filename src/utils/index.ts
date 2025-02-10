@@ -49,7 +49,7 @@ export const decrypt = async (content: string, secret: string, iv_secret: string
 
     const decoded = Uint8Array.from(atob(content), c => c.charCodeAt(0))
     const decrypted = await crypto.subtle.decrypt(
-        { name: "AES-CBC", iv },
+        { name: 'AES-CBC', iv },
         key,
         decoded
     )
