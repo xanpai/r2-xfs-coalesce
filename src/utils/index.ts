@@ -1,3 +1,8 @@
+/**
+ * Generate a signature for the given IP address using the given secret.
+ * @param ip
+ * @param secret
+ */
 export async function generateSignature(ip: string, secret: string) {
     const encoder = new TextEncoder()
 
@@ -13,7 +18,10 @@ export async function generateSignature(ip: string, secret: string) {
         .replace(/=+$/, '')
 }
 
-
+/**
+ * Generate a key for the given secret.
+ * @param secret
+ */
 export const getKey = async (secret: string) => {
     const keyBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret))
     const truncatedKeyBuffer = keyBuffer.slice(0, 16)
@@ -27,6 +35,12 @@ export const getKey = async (secret: string) => {
     )
 }
 
+/**
+ * Encrypt the given content using the given secret and iv_secret.
+ * @param content
+ * @param secret
+ * @param iv_secret
+ */
 export const decrypt = async (content: string, secret: string, iv_secret: string) => {
     console.log('decrypting', content)
 

@@ -1,30 +1,36 @@
-import { IRequest, json, status } from 'itty-router'
+import { IRequest, status } from 'itty-router'
 import { generateSignature, decrypt } from '../utils'
 
 export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: Env) => {
+    // get signature from query and check if it exists
     const signature = query?.sig
     if (!signature) {
         return status(404)
     }
 
+    // make sure signature is a string
     if (typeof signature !== 'string') {
         return status(404)
     }
 
+    // get user IP address
     const userIP = headers.get('CF-Connecting-IP') ||
         headers.get('x-forwarded-for')?.split(',')[0] ||
         headers.get('x-real-ip') ||
         headers.get('remote-addr') ||
-        '77.96.243.165'
+        '127.0.0.1'
 
+    // generate local signature and compare with the one from the query
     const localSignature = await generateSignature(userIP, env.SECRET)
     if (signature !== localSignature) {
         return status(404)
     }
 
+    // decrypt the URL
     const decodedURL = await decrypt(urlHASH.replace(/-/g, '+').replace(/_/g, '/'), env.SECRET, env.IV_SECRET)
     const url = new URL(decodedURL)
 
+    // fetch the file from the URL
     const response = await fetch(url.toString(), {
         method: 'GET'
     })
