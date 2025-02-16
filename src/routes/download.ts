@@ -36,8 +36,8 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         const _headers = new Headers({
             'User-Agent': headers.get('User-Agent') || '',
             'Referer': headers.get('Referer') || '',
-            'X-Forwarded-For': userIP,
-            'X-Real-IP': userIP
+            // 'X-Forwarded-For': userIP,
+            // 'X-Real-IP': userIP
         })
 
         if (range) {
@@ -50,10 +50,16 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
             headers: _headers
         })
 
+        if (!response.ok) {
+            return status(500)
+        }
+
+        console.log(JSON.stringify(Object.fromEntries(response.headers)))
+
         return new Response(response.body, {
             status: response.status,
             headers: {
-                ...response.headers.entries(),
+                ...Object.fromEntries(response.headers),
                 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
                 'Content-Disposition': response.headers.get('Content-Disposition') || 'attachment',
                 'Content-Length': response.headers.get('Content-Length') || '',
