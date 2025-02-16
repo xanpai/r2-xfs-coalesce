@@ -55,8 +55,6 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
             return status(500)
         }
 
-        console.log(JSON.stringify(Object.fromEntries(response.headers)))
-
         return new Response(response.body, {
             status: response.status,
             headers: {
