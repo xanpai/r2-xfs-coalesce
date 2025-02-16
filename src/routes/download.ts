@@ -36,6 +36,7 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         const _headers = new Headers({
             'User-Agent': headers.get('User-Agent') || '',
             'Referer': headers.get('Referer') || '',
+            'Accept-Encoding': 'identity',
             // 'X-Forwarded-For': userIP,
             // 'X-Real-IP': userIP
         })
