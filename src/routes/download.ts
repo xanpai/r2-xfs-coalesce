@@ -33,7 +33,12 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
 
         // get range headers and any other headers needed for resume downloads from the request
         const range = headers.get('Range')
-        const _headers = new Headers()
+        const _headers = new Headers({
+            'User-Agent': headers.get('User-Agent') || '',
+            'Referer': headers.get('Referer') || '',
+            'X-Forwarded-For': userIP,
+            'X-Real-IP': userIP
+        })
 
         if (range) {
             _headers.set('Range', range)
