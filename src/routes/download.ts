@@ -31,14 +31,24 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         const decodedURL = await decrypt(urlHASH.replace(/-/g, '+').replace(/_/g, '/'), env.SECRET, env.IV_SECRET)
         const url = new URL(decodedURL)
 
+        // get range headers and any other headers needed for resume downloads from the request
+        const range = headers.get('Range')
+        const _headers = new Headers()
+
+        if (range) {
+            _headers.set('Range', range)
+        }
+
         // fetch the file from the URL
         const response = await fetch(url.toString(), {
-            method: 'GET'
+            method: 'GET',
+            headers: _headers
         })
 
         return new Response(response.body, {
             status: response.status,
             headers: {
+                ...response.headers.entries(),
                 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
                 'Content-Disposition': response.headers.get('Content-Disposition') || 'attachment',
                 'Content-Length': response.headers.get('Content-Length') || '',
