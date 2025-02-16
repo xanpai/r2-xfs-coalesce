@@ -32,23 +32,23 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         const url = new URL(decodedURL)
 
         // get range headers and any other headers needed for resume downloads from the request
-        const range = headers.get('Range')
-        const _headers = new Headers({
-            'User-Agent': headers.get('User-Agent') || '',
-            'Referer': headers.get('Referer') || '',
-            'Accept-Encoding': 'identity',
-            // 'X-Forwarded-For': userIP,
-            // 'X-Real-IP': userIP
-        })
-
-        if (range) {
-            _headers.set('Range', range)
-        }
+        // const range = headers.get('Range')
+        // const _headers = new Headers({
+        //     'User-Agent': headers.get('User-Agent') || '',
+        //     'Referer': headers.get('Referer') || '',
+        //     'Accept-Encoding': 'identity',
+        //     // 'X-Forwarded-For': userIP,
+        //     // 'X-Real-IP': userIP
+        // })
+        //
+        // if (range) {
+        //     _headers.set('Range', range)
+        // }
 
         // fetch the file from the URL
         const response = await fetch(url.toString(), {
             method: 'GET',
-            headers: _headers
+            headers
         })
 
         if (!response.ok) {
