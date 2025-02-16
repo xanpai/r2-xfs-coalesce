@@ -5,7 +5,7 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
     // get signature from query and check if it exists
     const signature = query?.sig
     if (!signature) {
-        return status(404)
+        return status(400)
     }
 
     // make sure signature is a string
@@ -23,7 +23,7 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
     // generate local signature and compare with the one from the query
     const localSignature = await generateSignature(userIP, env.SECRET)
     if (signature !== localSignature) {
-        return status(404)
+        return status(405)
     }
 
     try {
@@ -73,6 +73,7 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
             }
         })
     } catch (error) {
-        return status(404)
+        console.error(error)
+        return status(503)
     }
 }
