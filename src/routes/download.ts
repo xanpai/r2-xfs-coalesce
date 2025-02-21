@@ -22,7 +22,7 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         headers.get('x-forwarded-for')?.split(',')[0] ||
         headers.get('x-real-ip') ||
         headers.get('remote-addr') ||
-        '77.96.243.165'
+        '127.0.0.1'
 
     // return json({ userIP, cf })
 
