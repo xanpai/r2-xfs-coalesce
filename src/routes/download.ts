@@ -1,11 +1,7 @@
-import { IRequest, status, json } from 'itty-router'
+import { IRequest, status } from 'itty-router'
 import { generateSignature, decrypt } from '../utils'
 
 export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: Env) => {
-    // console.log({
-    //     headers
-    // })
-
     // get signature from query and check if it exists
     const signature = query?.sig
     if (!signature) {
@@ -24,8 +20,6 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         headers.get('remote-addr') ||
         '127.0.0.1'
 
-    // return json({ userIP, cf })
-
     // generate local signature and compare with the one from the query
     const localSignature = await generateSignature(userIP, env.SECRET)
     if (signature !== localSignature) {
@@ -36,22 +30,6 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         // decrypt the URL
         const decodedURL = await decrypt(urlHASH.replace(/-/g, '+').replace(/_/g, '/'), env.SECRET, env.IV_SECRET)
         const url = new URL(decodedURL)
-
-        // get range headers and any other headers needed for resume downloads from the request
-        // const range = headers.get('Range')
-        // const _headers = new Headers({
-        //     'User-Agent': headers.get('User-Agent') || '',
-        //     'Referer': headers.get('Referer') || '',
-        //     'Accept-Encoding': 'identity',
-        //     // 'X-Forwarded-For': userIP,
-        //     // 'X-Real-IP': userIP
-        // })
-        //
-        // if (range) {
-        //     _headers.set('Range', range)
-        // }
-
-        // console.log(url.toString())
 
         // fetch the file from the URL
         const response = await fetch(url.toString(), {
@@ -66,18 +44,6 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         return new Response(response.body, {
             status: response.status,
             headers: response.headers
-            // headers: {
-            //     ...Object.fromEntries(response.headers),
-            //     'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
-            //     'Content-Disposition': response.headers.get('Content-Disposition') || 'attachment',
-            //     'Content-Length': response.headers.get('Content-Length') || '',
-            //     'Cache-Control': response.headers.get('Cache-Control') || 'public, max-age=3600',
-            //     'Expires': response.headers.get('Expires') || '',
-            //     'Last-Modified': response.headers.get('Last-Modified') || '',
-            //     'ETag': response.headers.get('ETag') || '',
-            //     'Content-Range': response.headers.get('Content-Range') || '',
-            //     'Accept-Ranges': response.headers.get('Accept-Ranges') || 'bytes'
-            // }
         })
     } catch (error) {
         console.error(error)
