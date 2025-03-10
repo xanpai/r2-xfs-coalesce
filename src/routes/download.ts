@@ -31,7 +31,7 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         const decodedURL = await decrypt(urlHASH.replace(/-/g, '+').replace(/_/g, '/'), env.SECRET, env.IV_SECRET)
         const url = new URL(decodedURL)
 
-        // fetch the file from the URL
+        // fetch the file from the URL b
         const response = await fetch(url.toString(), {
             method: 'GET',
             headers
@@ -41,9 +41,17 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
             return status(500)
         }
 
+        const contentDisposition = response.headers.get('content-disposition')
+        const headersObject = Object.fromEntries(response.headers.entries())
+
+        if (!contentDisposition?.includes('filename')) {
+            const filename = url.pathname.split('/').pop()
+            headersObject['content-disposition'] = `attachment; filename="${filename}"`
+        }
+
         return new Response(response.body, {
             status: response.status,
-            headers: response.headers
+            headers: new Headers(headersObject)
         })
     } catch (error) {
         console.error(error)
