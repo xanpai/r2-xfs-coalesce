@@ -42,8 +42,6 @@ export const getKey = async (secret: string) => {
  * @param iv_secret
  */
 export const decrypt = async (content: string, secret: string, iv_secret: string) => {
-    console.log('decrypting', content)
-
     const key = await getKey(secret)
     const iv = new TextEncoder().encode(iv_secret).slice(0, 16)
 

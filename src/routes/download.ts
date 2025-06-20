@@ -54,7 +54,6 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
             headers: new Headers(headersObject)
         })
     } catch (error) {
-        console.error(error)
         return status(503)
     }
 }

@@ -1,8 +1,10 @@
 import { AutoRouter, cors, status } from 'itty-router'
 import { download } from './routes/download'
 
+import { upload } from './routes/upload'
+
 const { preflight, corsify } = cors({
-	allowMethods: ['GET']
+	allowMethods: ['GET', 'PUT', 'OPTIONS'],
 })
 const router = AutoRouter({
 	before: [preflight],
@@ -11,6 +13,7 @@ const router = AutoRouter({
 
 router
 	.get('/download/:urlHASH', download)
+	.put('/upload/:urlHASH', upload)
 	.all('*', () => status(404))
 
 
