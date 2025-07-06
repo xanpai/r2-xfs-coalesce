@@ -1,7 +1,7 @@
 import { IRequest, status } from 'itty-router'
 import { generateSignature, decrypt } from '../utils'
 
-export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: Env) => {
+export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: Env, ctx: ExecutionContext) => {
     // get signature from query and check if it exists
     const signature = query?.sig
     if (!signature) {
@@ -31,6 +31,33 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         const decodedURL = await decrypt(urlHASH.replace(/-/g, '+').replace(/_/g, '/'), env.SECRET, env.IV_SECRET)
         const url = new URL(decodedURL)
 
+        // Create cache key based on the original URL
+        const cacheKey = new Request(url.toString(), { method: 'GET' })
+
+        // Check if the response is cached
+        const cache = caches.default
+        const cachedResponse = await caches.default.match(cacheKey)
+
+        if (cachedResponse) {
+            // Clone the cached response and add our custom headers
+            const response = new Response(cachedResponse.body, {
+                status: cachedResponse.status,
+                headers: new Headers(cachedResponse.headers)
+            })
+
+            // Ensure proper content-disposition header
+            const contentDisposition = response.headers.get('content-disposition')
+            if (!contentDisposition?.includes('filename')) {
+                const filename = url.pathname.split('/').pop()
+                response.headers.set('content-disposition', `attachment; filename="${filename}"`)
+            }
+
+            // Add cache hit header for debugging
+            response.headers.set('X-Cache', 'HIT')
+
+            return response
+        }
+
         // fetch the file from the URL b
         const response = await fetch(url.toString(), {
             method: 'GET',
@@ -41,6 +68,9 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
             return status(500)
         }
 
+        // Clone response for caching
+        const responseClone = response.clone()
+
         const contentDisposition = response.headers.get('content-disposition')
         const headersObject = Object.fromEntries(response.headers.entries())
 
@@ -49,10 +79,31 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
             headersObject['content-disposition'] = `attachment; filename="${filename}"`
         }
 
-        return new Response(response.body, {
+        // Add cache control headers
+        headersObject['Cache-Control'] = 'public, max-age=604800' // 1 week
+        headersObject['X-Cache'] = 'MISS'
+
+        // Create the final response
+        const finalResponse = new Response(response.body, {
             status: response.status,
             headers: new Headers(headersObject)
         })
+
+
+        // Cache the original response (without our custom headers)
+        const cacheResponse = new Response(responseClone.body, {
+            status: responseClone.status,
+            headers: new Headers({
+                ...Object.fromEntries(responseClone.headers.entries()),
+                'Cache-Control': 'public, max-age=604800',
+                'Expires': new Date(Date.now() + 604800000).toUTCString() // 1 week
+            })
+        })
+
+        // Store in cache (don't await to avoid blocking the response)
+        ctx?.waitUntil?.(cache.put(cacheKey, cacheResponse))
+
+        return finalResponse
     } catch (error) {
         return status(503)
     }
