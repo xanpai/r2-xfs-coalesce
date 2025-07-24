@@ -9,10 +9,9 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
     }
 
     const userIP = headers.get('CF-Connecting-IP') ||
-        headers.get('x-forwarded-for')?.split(',')[0] ||
+        headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
         headers.get('x-real-ip') ||
-        headers.get('remote-addr') ||
-        '77.96.243.165'
+        headers.get('remote-addr')
 
     if (!userIP) {
         return status(400)
@@ -37,8 +36,8 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         } else if (isR2) {
             return handleR2File(url, headers, ctx)
         } else {
-            // Fallback for any other cloud storage
-            return handleCloudFile(url, headers)
+            // Fallback - treat as B2 (more conservative caching)
+            return handleB2File(url, headers, ctx)
         }
 
     } catch (error) {
@@ -48,71 +47,104 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
 }
 
 async function handleB2File(url: URL, requestHeaders: Headers, ctx: ExecutionContext): Promise<Response> {
-    // B2 often has auth in URL params, so we need to be careful with caching
-    const shouldCache = await shouldCacheFile(url, requestHeaders)
+    // For B2, ALWAYS try cache first to avoid rate limits
+    const cacheKey = generateCacheKey(url.pathname)
+    const cached = await getCachedResponse(cacheKey)
+    if (cached) {
+        console.log('B2 cache hit for:', url.pathname)
+        return cached
+    }
 
-    if (shouldCache) {
-        const cached = await getCachedResponse(url.pathname, ctx)
-        if (cached) {
-            return cached
-        }
+    console.log('B2 cache miss, fetching:', url.pathname)
+
+    // Check if this is a range request
+    const rangeHeader = requestHeaders.get('range')
+    const isRangeRequest = !!rangeHeader
+
+    // For range requests on B2, don't cache (too complex)
+    if (isRangeRequest) {
+        return streamB2File(url, requestHeaders)
     }
 
     const fetchHeaders: Record<string, string> = {}
-
-    // Forward important headers
     const userAgent = requestHeaders.get('User-Agent')
     if (userAgent) fetchHeaders['User-Agent'] = userAgent
 
-    const rangeHeader = requestHeaders.get('range')
-    if (rangeHeader) fetchHeaders['Range'] = rangeHeader
+    try {
+        const response = await fetch(url.toString(), {
+            method: 'GET',
+            headers: fetchHeaders
+        })
 
-    const response = await fetch(url.toString(), {
-        method: 'GET',
-        headers: fetchHeaders
-    })
-
-    if (!response.ok) {
-        return status(response.status >= 400 && response.status < 500 ? response.status : 502)
-    }
-
-    // Clone BEFORE processing the response
-    let responseClone: Response | null = null
-    if (shouldCache) {
-        const contentLength = parseInt(response.headers.get('content-length') || '0')
-        if (contentLength > 0 && contentLength < 50 * 1024 * 1024) { // < 50MB
-            responseClone = response.clone()
+        if (!response.ok) {
+            // If B2 returns rate limit error, return cached version even if expired
+            if (response.status === 429 || response.status === 503) {
+                const expiredCache = await getCachedResponse(cacheKey, true) // Allow expired
+                if (expiredCache) {
+                    console.log('B2 rate limited, serving expired cache')
+                    return addRateLimitHeaders(expiredCache)
+                }
+            }
+            return status(response.status >= 400 && response.status < 500 ? response.status : 502)
         }
+
+        const contentLength = parseInt(response.headers.get('content-length') || '0')
+
+        // Cache B2 files more aggressively to avoid rate limits
+        let shouldCache = true
+        let cacheTime = 86400 // 24 hours default
+
+        if (contentLength > 500 * 1024 * 1024) { // > 500MB
+            // Very large files: cache for longer but with shorter browser cache
+            cacheTime = 604800 // 7 days
+            shouldCache = true
+        } else if (contentLength > 100 * 1024 * 1024) { // > 100MB
+            cacheTime = 259200 // 3 days
+            shouldCache = true
+        } else {
+            cacheTime = 86400 // 1 day for smaller files
+            shouldCache = true
+        }
+
+        if (shouldCache) {
+            // Clone before processing
+            const responseClone = response.clone()
+            const processedResponse = processB2Response(response, url, contentLength)
+
+            // Cache in background
+            ctx.waitUntil(cacheResponse(cacheKey, responseClone, cacheTime))
+
+            return processedResponse
+        } else {
+            return processB2Response(response, url, contentLength)
+        }
+
+    } catch (error) {
+        console.error('B2 fetch error:', error)
+        // On any error, try to serve from cache even if expired
+        const expiredCache = await getCachedResponse(cacheKey, true)
+        if (expiredCache) {
+            console.log('B2 error, serving expired cache')
+            return addErrorHeaders(expiredCache)
+        }
+        return status(503)
     }
-
-    const processedResponse = processResponse(response, url)
-
-    // Cache after processing
-    if (responseClone) {
-        ctx.waitUntil(cacheResponse(url.pathname, responseClone, ctx, 3600)) // 1 hour for B2
-    }
-
-    return processedResponse
 }
 
 async function handleR2File(url: URL, requestHeaders: Headers, ctx: ExecutionContext): Promise<Response> {
-    // R2 is more cache-friendly since it's Cloudflare's own service
-    const cached = await getCachedResponse(url.pathname, ctx)
+    // R2 is more reliable, use lighter caching
+    const cacheKey = generateCacheKey(url.pathname)
+    const cached = await getCachedResponse(cacheKey)
     if (cached) {
         return cached
     }
 
     const fetchHeaders: Record<string, string> = {}
-
     const userAgent = requestHeaders.get('User-Agent')
     if (userAgent) fetchHeaders['User-Agent'] = userAgent
 
     const rangeHeader = requestHeaders.get('range')
     if (rangeHeader) fetchHeaders['Range'] = rangeHeader
-
-    // R2 supports conditional requests
-    const ifNoneMatch = requestHeaders.get('if-none-match')
-    if (ifNoneMatch) fetchHeaders['If-None-Match'] = ifNoneMatch
 
     const response = await fetch(url.toString(), {
         method: 'GET',
@@ -123,27 +155,22 @@ async function handleR2File(url: URL, requestHeaders: Headers, ctx: ExecutionCon
         return status(response.status >= 400 && response.status < 500 ? response.status : 502)
     }
 
-    // Clone BEFORE processing the response
-    let responseClone: Response | null = null
     const contentLength = parseInt(response.headers.get('content-length') || '0')
-    if (contentLength > 0 && contentLength < 100 * 1024 * 1024) { // < 100MB for R2
-        responseClone = response.clone()
+
+    // Only cache smaller R2 files
+    if (!rangeHeader && contentLength < 200 * 1024 * 1024) { // < 200MB
+        const responseClone = response.clone()
+        const processedResponse = processR2Response(response, url, contentLength)
+        ctx.waitUntil(cacheResponse(cacheKey, responseClone, 3600)) // 1 hour
+        return processedResponse
+    } else {
+        return processR2Response(response, url, contentLength)
     }
-
-    const processedResponse = processResponse(response, url)
-
-    // Cache R2 files more aggressively
-    if (responseClone) {
-        ctx.waitUntil(cacheResponse(url.pathname, responseClone, ctx, 86400)) // 24 hours for R2
-    }
-
-    return processedResponse
 }
 
-async function handleCloudFile(url: URL, requestHeaders: Headers): Promise<Response> {
-    // Generic handler for other cloud storage services
+async function streamB2File(url: URL, requestHeaders: Headers): Promise<Response> {
+    // Direct streaming for range requests
     const fetchHeaders: Record<string, string> = {}
-
     const userAgent = requestHeaders.get('User-Agent')
     if (userAgent) fetchHeaders['User-Agent'] = userAgent
 
@@ -156,21 +183,19 @@ async function handleCloudFile(url: URL, requestHeaders: Headers): Promise<Respo
     })
 
     if (!response.ok) {
-        return status(response.status >= 400 && response.status < 500 ? response.status : 502)
+        return status(response.status)
     }
 
-    return processResponse(response, url)
+    return new Response(response.body, {
+        status: response.status,
+        headers: response.headers
+    })
 }
 
-function processResponse(response: Response, url: URL): Response {
-    // Create a new headers object from the original response headers
+function processB2Response(response: Response, url: URL, contentLength: number): Response {
     const originalHeaders = Object.fromEntries(response.headers.entries())
-    const contentLength = parseInt(response.headers.get('content-length') || '0')
-
-    // Get filename from URL path
     const filename = url.pathname.split('/').pop() || 'download'
 
-    // Create new headers object with modifications
     const newHeaders: Record<string, string> = {
         ...originalHeaders
     }
@@ -180,22 +205,15 @@ function processResponse(response: Response, url: URL): Response {
         newHeaders['content-disposition'] = `attachment; filename="${filename}"`
     }
 
-    // Set appropriate cache headers based on file size
+    // Conservative browser caching for B2, aggressive CDN caching
     if (contentLength > 100 * 1024 * 1024) { // > 100MB
-        newHeaders['cache-control'] = 'public, max-age=3600, s-maxage=86400' // 1hr browser, 24hr CDN
-    } else if (contentLength > 10 * 1024 * 1024) { // > 10MB
-        newHeaders['cache-control'] = 'public, max-age=7200, s-maxage=172800' // 2hr browser, 48hr CDN
+        newHeaders['cache-control'] = 'public, max-age=1800, s-maxage=604800' // 30min browser, 7 days CDN
     } else {
-        newHeaders['cache-control'] = 'public, max-age=31536000, immutable' // Small files
+        newHeaders['cache-control'] = 'public, max-age=3600, s-maxage=86400' // 1hr browser, 1 day CDN
     }
 
-    // Enable range requests for resumable downloads
     newHeaders['accept-ranges'] = 'bytes'
-
-    // Add CORS headers if needed
-    newHeaders['access-control-allow-origin'] = '*'
-    newHeaders['access-control-allow-methods'] = 'GET, HEAD, OPTIONS'
-    newHeaders['access-control-allow-headers'] = 'Range'
+    newHeaders['x-cache-source'] = 'b2-worker'
 
     return new Response(response.body, {
         status: response.status,
@@ -203,43 +221,95 @@ function processResponse(response: Response, url: URL): Response {
     })
 }
 
-async function shouldCacheFile(url: URL, headers: Headers): Promise<boolean> {
-    // Don't cache if there's a range request (partial content)
-    if (headers.get('range')) {
-        return false
+function processR2Response(response: Response, url: URL, contentLength: number): Response {
+    const originalHeaders = Object.fromEntries(response.headers.entries())
+    const filename = url.pathname.split('/').pop() || 'download'
+
+    const newHeaders: Record<string, string> = {
+        ...originalHeaders
     }
 
-    // Don't cache if URL has query params that look like auth tokens
-    const hasAuthParams = url.search.includes('token') ||
-        url.search.includes('signature') ||
-        url.search.includes('expires')
+    if (!newHeaders['content-disposition']?.includes('filename')) {
+        newHeaders['content-disposition'] = `attachment; filename="${filename}"`
+    }
 
-    return !hasAuthParams
+    // More aggressive caching for R2
+    newHeaders['cache-control'] = 'public, max-age=31536000, immutable'
+    newHeaders['accept-ranges'] = 'bytes'
+    newHeaders['x-cache-source'] = 'r2-worker'
+
+    return new Response(response.body, {
+        status: response.status,
+        headers: new Headers(newHeaders)
+    })
 }
 
-async function getCachedResponse(pathname: string, ctx: ExecutionContext): Promise<Response | null> {
-    const cache = caches.default
+function generateCacheKey(pathname: string): string {
     const hash = btoa(pathname).replace(/[^a-zA-Z0-9]/g, '')
-    const cacheKey = new Request(`https://cache.movieworker.dev/v1/${hash}_v5`)
-
-    return await cache.match(cacheKey) || null
+    return `https://cache.movieworker.dev/v1/b2_${hash}_v5`
 }
 
-async function cacheResponse(pathname: string, response: Response, ctx: ExecutionContext, maxAge: number): Promise<void> {
+async function getCachedResponse(cacheKey: string, allowExpired: boolean = false): Promise<Response | null> {
     const cache = caches.default
-    const hash = btoa(pathname).replace(/[^a-zA-Z0-9]/g, '')
-    const cacheKey = new Request(`https://cache.movieworker.dev/v1/${hash}_v5`)
+    const request = new Request(cacheKey)
+    const response = await cache.match(request)
+
+    if (!response) return null
+
+    if (!allowExpired) return response
+
+    // For expired cache, check if it's still usable
+    const cacheControl = response.headers.get('cache-control')
+    if (cacheControl && cacheControl.includes('max-age')) {
+        const cachedAt = response.headers.get('x-cached-at')
+        if (cachedAt) {
+            const cacheAge = Date.now() - new Date(cachedAt).getTime()
+            // Allow serving cache up to 7 days old in emergency
+            if (cacheAge < 7 * 24 * 60 * 60 * 1000) {
+                return response
+            }
+        }
+    }
+
+    return response // Return anyway if no timestamp
+}
+
+async function cacheResponse(cacheKey: string, response: Response, maxAge: number): Promise<void> {
+    const cache = caches.default
+    const request = new Request(cacheKey)
 
     const originalHeaders = Object.fromEntries(response.headers.entries())
     const cacheResponse = new Response(response.body, {
         status: response.status,
         headers: {
             ...originalHeaders,
-            'Cache-Control': `public, max-age=${maxAge}`,
-            'X-Cached-At': new Date().toISOString(),
-            'X-Cache-Source': 'worker'
+            'cache-control': `public, max-age=${maxAge}`,
+            'x-cached-at': new Date().toISOString(),
+            'x-cache-ttl': maxAge.toString()
         },
     })
 
-    await cache.put(cacheKey, cacheResponse)
+    await cache.put(request, cacheResponse)
+}
+
+function addRateLimitHeaders(response: Response): Response {
+    const headers = new Headers(response.headers)
+    headers.set('x-served-from', 'cache-rate-limit')
+    headers.set('x-cache-status', 'expired-but-served')
+
+    return new Response(response.body, {
+        status: response.status,
+        headers
+    })
+}
+
+function addErrorHeaders(response: Response): Response {
+    const headers = new Headers(response.headers)
+    headers.set('x-served-from', 'cache-error-fallback')
+    headers.set('x-cache-status', 'expired-but-served')
+
+    return new Response(response.body, {
+        status: response.status,
+        headers
+    })
 }
