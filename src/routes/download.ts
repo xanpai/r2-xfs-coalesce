@@ -1,12 +1,14 @@
 import { IRequest, status } from 'itty-router'
 import { generateSignature, decrypt } from '../utils'
+import { getCachedResponse, cacheB2Response, generateCacheKey } from '../utils/cache-manager'
+import { cleanupActiveRequests, processLargeFileResponse } from '../utils/helpers'
 
 // In-memory request deduplication to prevent multiple B2 calls for same file
 const activeRequests = new Map<string, Promise<Response>>()
 
 export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: Env, ctx: ExecutionContext) => {
     // Clean up active requests map if it gets too large
-    cleanupActiveRequests()
+    cleanupActiveRequests(activeRequests)
 
     // Signature validation
     const signature = query?.sig
@@ -200,134 +202,6 @@ async function handleR2LargeFile(url: URL, requestHeaders: Headers): Promise<Res
         return status(response.status >= 400 && response.status < 500 ? response.status : 502)
     }
 
-    return processLargeFileResponse(response, url, 'r2')
-}
-
-function processLargeFileResponse(response: Response, url: URL, source: 'b2' | 'r2', contentLength?: number): Response {
-    const originalHeaders = Object.fromEntries(response.headers.entries())
-    const filename = url.pathname.split('/').pop() || 'download'
-    const fileSize = contentLength || parseInt(response.headers.get('content-length') || '0')
-
-    const newHeaders: Record<string, string> = {
-        ...originalHeaders
-    }
-
-    // Ensure proper content-disposition
-    if (!newHeaders['content-disposition']?.includes('filename')) {
-        newHeaders['content-disposition'] = `attachment; filename="${filename}"`
-    }
-
-    const fileSizeMB = Math.round(fileSize / 1024 / 1024)
-    const isSmallEnoughForWorkerCache = fileSize <= 400 * 1024 * 1024
-
-    // Set cache strategy based on file size and source
-    if (source === 'b2') {
-        if (isSmallEnoughForWorkerCache) {
-            // Small B2 files: Worker cache + CDN cache
-            newHeaders['cache-control'] = 'public, max-age=1800, s-maxage=259200, stale-while-revalidate=86400' // 30min browser, 3 days CDN
-            newHeaders['x-cache-strategy'] = 'worker+cdn-b2'
-        } else {
-            // Large B2 files: CDN cache only (very aggressive to reduce B2 calls)
-            newHeaders['cache-control'] = 'public, max-age=300, s-maxage=2592000, stale-while-revalidate=86400' // 5min browser, 30 days CDN
-            newHeaders['x-cache-strategy'] = 'cdn-aggressive-b2'
-        }
-    } else {
-        // R2: More standard caching regardless of size
-        newHeaders['cache-control'] = 'public, max-age=3600, s-maxage=604800' // 1hr browser, 7 days CDN
-        newHeaders['x-cache-strategy'] = 'cdn-standard-r2'
-    }
-
-    // Essential headers for large file downloads
-    newHeaders['accept-ranges'] = 'bytes'
-    newHeaders['x-file-source'] = source
-    newHeaders['x-file-size'] = fileSize.toString()
-    newHeaders['x-worker-cacheable'] = isSmallEnoughForWorkerCache.toString()
-
-    // Help with download managers and resumable downloads
-    if (!newHeaders['etag']) {
-        // Generate a simple etag based on file path and size
-        newHeaders['etag'] = `"${btoa(url.pathname + fileSize).slice(0, 16)}"`
-    }
-
-    // CORS headers for browser compatibility
-    newHeaders['access-control-allow-origin'] = '*'
-    newHeaders['access-control-allow-methods'] = 'GET, HEAD, OPTIONS'
-    newHeaders['access-control-allow-headers'] = 'Range, If-Range, If-Modified-Since'
-    newHeaders['access-control-expose-headers'] = 'Content-Range, Content-Length, Accept-Ranges'
-
-    console.log(`Serving ${source.toUpperCase()} file: ${fileSizeMB}MB (${isSmallEnoughForWorkerCache ? 'Worker+CDN' : 'CDN-only'} caching)`)
-
-    return new Response(response.body, {
-        status: response.status,
-        headers: new Headers(newHeaders)
-    })
-}
-
-// Helper function to clean up active requests (called within handlers)
-function cleanupActiveRequests() {
-    if (activeRequests.size > 100) { // Prevent memory leaks
-        console.log('Cleaning up active requests map, size:', activeRequests.size)
-        activeRequests.clear()
-    }
-}
-
-// Cache helper functions for smaller B2 files
-function generateCacheKey(pathname: string): string {
-    const hash = btoa(pathname).replace(/[^a-zA-Z0-9]/g, '')
-    return `https://cache.movieworker.dev/v1/b2_${hash}_v6`
-}
-
-async function getCachedResponse(cacheKey: string, allowExpired: boolean = false): Promise<Response | null> {
-    try {
-        const cache = caches.default
-        const request = new Request(cacheKey)
-        const response = await cache.match(request)
-
-        if (!response) return null
-
-        // Check if cache is expired
-        const cachedAt = response.headers.get('x-cached-at')
-        const cacheTtl = parseInt(response.headers.get('x-cache-ttl') || '3600')
-
-        if (cachedAt) {
-            const cacheAge = (Date.now() - new Date(cachedAt).getTime()) / 1000
-
-            if (cacheAge < cacheTtl) {
-                return response // Fresh cache
-            } else if (allowExpired) {
-                return response // Expired but allowed
-            } else {
-                return null // Expired and not allowed
-            }
-        }
-
-        return allowExpired ? response : null
-    } catch (error) {
-        console.error('Cache lookup error:', error)
-        return null
-    }
-}
-
-async function cacheB2Response(cacheKey: string, response: Response, maxAge: number): Promise<void> {
-    try {
-        const cache = caches.default
-        const request = new Request(cacheKey)
-
-        const originalHeaders = Object.fromEntries(response.headers.entries())
-        const cacheResponse = new Response(response.body, {
-            status: response.status,
-            headers: {
-                ...originalHeaders,
-                'cache-control': `public, max-age=${maxAge}`,
-                'x-cached-at': new Date().toISOString(),
-                'x-cache-ttl': maxAge.toString(),
-                'x-cache-source': 'worker-b2'
-            },
-        })
-
-        await cache.put(request, cacheResponse)
-        console.log('B2 file cached successfully in Worker cache')
-    } catch (error) {
-        console.error('Failed to cache B2 response:', error)
-    }
+    const contentLength = parseInt(response.headers.get('content-length') || '0')
+    return processLargeFileResponse(response, url, 'r2', contentLength)
 }

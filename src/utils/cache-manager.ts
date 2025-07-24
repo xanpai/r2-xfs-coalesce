@@ -1,43 +1,133 @@
-export class CacheManager {
-    private cache: Cache
-    private ctx: ExecutionContext
+// Cache helper functions for B2/R2 files
 
-    constructor(ctx: ExecutionContext) {
-        this.cache = caches.default
-        this.ctx = ctx
-    }
+export function generateCacheKey(pathname: string): string {
+    const hash = btoa(pathname).replace(/[^a-zA-Z0-9]/g, '')
+    return `https://cache.movieworker.dev/v1/b2_${hash}_v6`
+}
 
-    private generateCacheKey(key: string): Request {
-        const hash = btoa(key).replace(/[^a-zA-Z0-9]/g, '');
-        return new Request(`https://cache.movieworker.dev/v1/${hash}_v3`, {
-            method: 'GET'
-        })
-    }
+export async function getCachedResponse(cacheKey: string, allowExpired: boolean = false): Promise<Response | null> {
+    try {
+        const cache = caches.default
+        const request = new Request(cacheKey)
+        const response = await cache.match(request)
 
-    async get(key: string): Promise<Response | null> {
-        const cacheKey = this.generateCacheKey(key)
-        return await this.cache.match(cacheKey) || null
-    }
+        if (!response) return null
 
-    async set(key: string, response: Response, maxAge: number = 3600): Promise<void> {
-        // Only cache files smaller than 50MB
-        const contentLength = parseInt(response.headers.get('content-length') || '0')
-        if (contentLength > 50 * 1024 * 1024) {
-            return // Skip caching for files > 50MB
+        // Check if cache is expired
+        const cachedAt = response.headers.get('x-cached-at')
+        const cacheTtl = parseInt(response.headers.get('x-cache-ttl') || '3600')
+
+        if (cachedAt) {
+            const cacheAge = (Date.now() - new Date(cachedAt).getTime()) / 1000
+
+            if (cacheAge < cacheTtl) {
+                return response // Fresh cache
+            } else if (allowExpired) {
+                return response // Expired but allowed
+            } else {
+                return null // Expired and not allowed
+            }
         }
 
-        const cacheKey = this.generateCacheKey(key)
-        const originalHeaders = Object.fromEntries(response.headers.entries())
+        return allowExpired ? response : null
+    } catch (error) {
+        console.error('Cache lookup error:', error)
+        return null
+    }
+}
 
+export async function cacheB2Response(cacheKey: string, response: Response, maxAge: number): Promise<void> {
+    try {
+        const cache = caches.default
+        const request = new Request(cacheKey)
+
+        const originalHeaders = Object.fromEntries(response.headers.entries())
         const cacheResponse = new Response(response.body, {
             status: response.status,
             headers: {
                 ...originalHeaders,
-                'Cache-Control': `public, max-age=${maxAge}`,
-                'X-Cached-At': new Date().toISOString()
+                'cache-control': `public, max-age=${maxAge}`,
+                'x-cached-at': new Date().toISOString(),
+                'x-cache-ttl': maxAge.toString(),
+                'x-cache-source': 'worker-b2'
             },
         })
 
-        this.ctx.waitUntil(this.cache.put(cacheKey, cacheResponse))
+        await cache.put(request, cacheResponse)
+        console.log('B2 file cached successfully in Worker cache')
+    } catch (error) {
+        console.error('Failed to cache B2 response:', error)
+    }
+}
+
+export async function cacheR2Response(cacheKey: string, response: Response, maxAge: number): Promise<void> {
+    try {
+        const cache = caches.default
+        const request = new Request(cacheKey)
+
+        const originalHeaders = Object.fromEntries(response.headers.entries())
+        const cacheResponse = new Response(response.body, {
+            status: response.status,
+            headers: {
+                ...originalHeaders,
+                'cache-control': `public, max-age=${maxAge}`,
+                'x-cached-at': new Date().toISOString(),
+                'x-cache-ttl': maxAge.toString(),
+                'x-cache-source': 'worker-r2'
+            },
+        })
+
+        await cache.put(request, cacheResponse)
+        console.log('R2 file cached successfully in Worker cache')
+    } catch (error) {
+        console.error('Failed to cache R2 response:', error)
+    }
+}
+
+export async function clearExpiredCache(): Promise<void> {
+    try {
+        const cache = caches.default
+        // Note: Cache API doesn't have a direct way to list all keys
+        // This would need to be implemented with a separate tracking mechanism
+        // For now, we rely on natural TTL expiration
+        console.log('Cache cleanup would run here if implemented')
+    } catch (error) {
+        console.error('Cache cleanup error:', error)
+    }
+}
+
+export interface CacheStats {
+    hits: number
+    misses: number
+    size: number
+    lastCleanup: Date
+}
+
+// Simple in-memory cache stats (resets on worker restart)
+let cacheStats: CacheStats = {
+    hits: 0,
+    misses: 0,
+    size: 0,
+    lastCleanup: new Date()
+}
+
+export function incrementCacheHit(): void {
+    cacheStats.hits++
+}
+
+export function incrementCacheMiss(): void {
+    cacheStats.misses++
+}
+
+export function getCacheStats(): CacheStats {
+    return { ...cacheStats }
+}
+
+export function resetCacheStats(): void {
+    cacheStats = {
+        hits: 0,
+        misses: 0,
+        size: 0,
+        lastCleanup: new Date()
     }
 }
