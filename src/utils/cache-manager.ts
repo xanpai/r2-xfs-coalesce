@@ -29,10 +29,12 @@ export class CacheManager {
     async set(key: string, response: Response, maxAge: number = 3600): Promise<void> {
         const cacheKey = this.generateCacheKey(key)
 
-        // Store in Cache API with custom headers for metadata
+        // Preserve original headers and add cache metadata
+        const originalHeaders = Object.fromEntries(response.headers.entries())
         const cacheResponse = new Response(response.body, {
+            status: response.status,
             headers: {
-                'Content-Type': 'application/json',
+                ...originalHeaders,
                 'Cache-Control': `public, max-age=${maxAge}`,
                 'X-Cached-At': new Date().toISOString(),
                 'X-Cache-Age': '0'
