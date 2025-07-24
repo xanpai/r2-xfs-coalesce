@@ -65,6 +65,9 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
             headersObject['content-disposition'] = `attachment; filename="${filename}"`
         }
 
+        // Clone response before consuming the body
+        const responseClone = response.clone()
+
         const finalResponse = new Response(response.body, {
             status: response.status,
             headers: new Headers({
@@ -74,10 +77,13 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         })
 
         // Cache the response for 7 days
-        await cacheManager.set(url.pathname, finalResponse.clone(), 604800)
+        await cacheManager.set(url.pathname, responseClone, 604800)
 
         return finalResponse
     } catch (error) {
+        if (error instanceof TypeError && error.message.includes('fetch')) {
+            return status(502) // Bad Gateway for fetch errors
+        }
         return status(503)
     }
 }
