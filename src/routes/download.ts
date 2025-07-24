@@ -5,6 +5,9 @@ import { generateSignature, decrypt } from '../utils'
 const activeRequests = new Map<string, Promise<Response>>()
 
 export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: Env, ctx: ExecutionContext) => {
+    // Clean up active requests map if it gets too large
+    cleanupActiveRequests()
+
     // Signature validation
     const signature = query?.sig
     if (!signature || typeof signature !== 'string') {
@@ -88,10 +91,12 @@ async function handleB2LargeFile(url: URL, requestHeaders: Headers, ctx: Executi
     // Store it for deduplication
     activeRequests.set(requestKey, requestPromise)
 
-    // Clean up after 30 seconds
-    setTimeout(() => {
-        activeRequests.delete(requestKey)
-    }, 30000)
+    // Clean up this specific request after timeout (using Promise-based cleanup)
+    requestPromise.finally(() => {
+        setTimeout(() => {
+            activeRequests.delete(requestKey)
+        }, 30000) // Clean up after 30 seconds
+    })
 
     try {
         const response = await requestPromise
@@ -258,12 +263,13 @@ function processLargeFileResponse(response: Response, url: URL, source: 'b2' | '
     })
 }
 
-// Clean up old active requests periodically
-setInterval(() => {
+// Helper function to clean up active requests (called within handlers)
+function cleanupActiveRequests() {
     if (activeRequests.size > 100) { // Prevent memory leaks
+        console.log('Cleaning up active requests map, size:', activeRequests.size)
         activeRequests.clear()
     }
-}, 60000) // Clean up every minute
+}
 
 // Cache helper functions for smaller B2 files
 function generateCacheKey(pathname: string): string {
