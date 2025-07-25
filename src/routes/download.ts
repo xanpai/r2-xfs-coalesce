@@ -17,7 +17,7 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
     }
 
     const userIP = headers.get('CF-Connecting-IP') ||
-        headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+        headers.get('x-forwarded-for')?.split(',')[0] ||
         headers.get('x-real-ip') ||
         headers.get('remote-addr')
 
