@@ -20,7 +20,7 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         headers.get('remote-addr') ||
         '127.0.0.1'
 
-    // generate local signature and compare with the one from the query
+    // generate a local signature and compare with the one from the query
     const localSignature = await generateSignature(userIP, env.SECRET)
     if (signature !== localSignature) {
         return status(405)
