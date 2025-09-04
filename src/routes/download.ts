@@ -2,31 +2,29 @@ import { IRequest, status } from 'itty-router'
 import { generateSignature, decrypt } from '../utils'
 
 export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: Env) => {
-    // get signature from query and check if it exists
-    const signature = query?.sig
-    if (!signature) {
-        return status(400)
-    }
-
-    // make sure signature is a string
-    if (typeof signature !== 'string') {
-        return status(404)
-    }
-
-    // get user IP address
-    const userIP = headers.get('CF-Connecting-IP') ||
-        headers.get('x-forwarded-for')?.split(',')[0] ||
-        headers.get('x-real-ip') ||
-        headers.get('remote-addr') ||
-        '127.0.0.1'
-
-    // generate a local signature and compare with the one from the query
-    const localSignature = await generateSignature(userIP, env.SECRET)
-    if (signature !== localSignature) {
-        return status(405)
-    }
-
-    const startTime = Date.now()
+    // // get signature from query and check if it exists
+    // const signature = query?.sig
+    // if (!signature) {
+    //     return status(400)
+    // }
+    //
+    // // make sure signature is a string
+    // if (typeof signature !== 'string') {
+    //     return status(404)
+    // }
+    //
+    // // get user IP address
+    // const userIP = headers.get('CF-Connecting-IP') ||
+    //     headers.get('x-forwarded-for')?.split(',')[0] ||
+    //     headers.get('x-real-ip') ||
+    //     headers.get('remote-addr') ||
+    //     '127.0.0.1'
+    //
+    // // generate a local signature and compare with the one from the query
+    // const localSignature = await generateSignature(userIP, env.SECRET)
+    // if (signature !== localSignature) {
+    //     return status(405)
+    // }
 
     try {
         // decrypt the URL
