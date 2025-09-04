@@ -86,12 +86,10 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
 
                 // For 500 errors, log details and potentially retry
                 if (response.status >= 500) {
-                    const errorText = await response.text().catch(() => 'No error body')
-                    console.error(`R2 Error ${response.status} on attempt ${attempt + 1}:`, errorText)
 
                     // Don't retry on last attempt
                     if (attempt === maxRetries) {
-                        return new Response(`R2 server error: ${response.status}`, { status: 502 })
+                        return new Response(`Server error: ${response.status}`, { status: 502 })
                     }
 
                     // Continue to retry logic below
