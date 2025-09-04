@@ -1,4 +1,4 @@
-import { IRequest, status } from 'itty-router'
+import { IRequest, status, json } from 'itty-router'
 import { generateSignature, decrypt } from '../utils'
 
 export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: Env) => {
@@ -13,12 +13,12 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
     //     return status(404)
     // }
     //
-    // // get user IP address
-    // const userIP = headers.get('CF-Connecting-IP') ||
-    //     headers.get('x-forwarded-for')?.split(',')[0] ||
-    //     headers.get('x-real-ip') ||
-    //     headers.get('remote-addr') ||
-    //     '127.0.0.1'
+    // get user IP address
+    const userIP = headers.get('CF-Connecting-IP') ||
+        headers.get('x-forwarded-for')?.split(',')[0] ||
+        headers.get('x-real-ip') ||
+        headers.get('remote-addr') ||
+        '127.0.0.1'
     //
     // // generate a local signature and compare with the one from the query
     // const localSignature = await generateSignature(userIP, env.SECRET)
@@ -50,6 +50,23 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
                     },
                     signal: controller.signal
                 })
+
+                // if dev sent some data
+                if (query.__debug === 'true') {
+                    return json({
+                        response: {
+                            status: response.status,
+                            headers: Object.fromEntries(response.headers.entries()),
+                            statusText: response.statusText
+                        },
+                        userIP,
+                        url,
+                        signature: {
+                            server: query.sig,
+                            local: await generateSignature(userIP, env.SECRET)
+                        }
+                    })
+                }
 
                 clearTimeout(timeoutId)
 
