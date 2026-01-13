@@ -1,9 +1,9 @@
 /**
  * Coalesced Fetch - Uses Durable Object to deduplicate concurrent requests
  *
- * Instead of multiple requests to B2, this routes through a Durable Object
- * that ensures only one request is made to the origin, with the response
- * streamed to all waiting clients.
+ * Protocol:
+ * - Control messages (headers/done/error): JSON text
+ * - Data chunks: Raw binary (ArrayBuffer)
  */
 
 interface CoalescedFetchOptions {
@@ -12,17 +12,15 @@ interface CoalescedFetchOptions {
     env: Env
 }
 
-interface WSMessage {
-    type: 'headers' | 'chunk' | 'done' | 'error'
+interface ControlMessage {
+    type: 'headers' | 'done' | 'error'
     status?: number
     headers?: Record<string, string>
-    data?: string  // base64 encoded chunk
     message?: string
 }
 
 /**
  * Performs a fetch through the coalescing Durable Object
- * Returns a Response that streams the data
  */
 export async function coalescedFetch(options: CoalescedFetchOptions): Promise<Response> {
     const { url, headers, env } = options
@@ -31,7 +29,6 @@ export async function coalescedFetch(options: CoalescedFetchOptions): Promise<Re
     const rangeHeader = headers?.get('range') || ''
 
     // Create unique ID for the Durable Object based on URL
-    // We use the URL path (without query params that change per request)
     const urlObj = new URL(url)
     const doKey = urlObj.origin + urlObj.pathname
 
@@ -56,13 +53,13 @@ export async function coalescedFetch(options: CoalescedFetchOptions): Promise<Re
     // Get the WebSocket from the response
     const ws = wsResponse.webSocket
     if (!ws) {
-        throw new Error('Failed to establish WebSocket connection to coalescer')
+        throw new Error('Failed to establish WebSocket connection')
     }
 
     // Accept the WebSocket connection
     ws.accept()
 
-    // Create a TransformStream to convert WebSocket messages to a readable stream
+    // Create a TransformStream for the response body
     const { readable, writable } = new TransformStream()
     const writer = writable.getWriter()
 
@@ -71,76 +68,74 @@ export async function coalescedFetch(options: CoalescedFetchOptions): Promise<Re
     let responseHeaders: Headers = new Headers()
     let headersReceived = false
     let headerResolve: ((value: void) => void) | null = null
-    const headersPromise = new Promise<void>((resolve) => {
+    let headerReject: ((error: Error) => void) | null = null
+
+    const headersPromise = new Promise<void>((resolve, reject) => {
         headerResolve = resolve
+        headerReject = reject
     })
 
     // Handle WebSocket messages
     ws.addEventListener('message', async (event) => {
         try {
-            const message: WSMessage = JSON.parse(event.data as string)
+            const data = event.data
 
-            switch (message.type) {
-                case 'headers':
-                    responseStatus = message.status || 200
-                    if (message.headers) {
-                        responseHeaders = new Headers(message.headers)
-                    }
-                    headersReceived = true
-                    if (headerResolve) {
-                        headerResolve()
-                    }
-                    break
+            // Binary message = raw chunk data
+            if (data instanceof ArrayBuffer) {
+                await writer.write(new Uint8Array(data))
+                return
+            }
 
-                case 'chunk':
-                    if (message.data) {
-                        // Decode base64 chunk
-                        const binary = atob(message.data)
-                        const bytes = new Uint8Array(binary.length)
-                        for (let i = 0; i < binary.length; i++) {
-                            bytes[i] = binary.charCodeAt(i)
+            // Text message = JSON control message
+            if (typeof data === 'string') {
+                const message: ControlMessage = JSON.parse(data)
+
+                switch (message.type) {
+                    case 'headers':
+                        responseStatus = message.status || 200
+                        if (message.headers) {
+                            responseHeaders = new Headers(message.headers)
                         }
-                        await writer.write(bytes)
-                    }
-                    break
+                        headersReceived = true
+                        if (headerResolve) headerResolve()
+                        break
 
-                case 'done':
-                    await writer.close()
-                    ws.close(1000, 'Complete')
-                    break
+                    case 'done':
+                        await writer.close()
+                        ws.close(1000, 'Complete')
+                        break
 
-                case 'error':
-                    const error = new Error(message.message || 'Unknown error')
-                    await writer.abort(error)
-                    ws.close(1011, message.message || 'Error')
-                    // If headers weren't received yet, we need to signal the error
-                    if (!headersReceived) {
-                        responseStatus = message.status || 500
-                        if (headerResolve) {
-                            headerResolve()
+                    case 'error':
+                        if (!headersReceived) {
+                            responseStatus = message.status || 500
+                            if (headerResolve) headerResolve()
                         }
-                    }
-                    break
+                        await writer.abort(new Error(message.message || 'Unknown error'))
+                        ws.close(1011, 'Error')
+                        break
+                }
             }
         } catch (e) {
-            console.error('Error processing WebSocket message:', e)
+            // Silently handle errors to avoid log spam
         }
     })
 
-    ws.addEventListener('error', async (event) => {
-        console.error('WebSocket error:', event)
+    ws.addEventListener('error', async () => {
         try {
+            if (!headersReceived && headerReject) {
+                headerReject(new Error('WebSocket error'))
+            }
             await writer.abort(new Error('WebSocket error'))
         } catch (e) {
             // Ignore
         }
     })
 
-    ws.addEventListener('close', async (event) => {
+    ws.addEventListener('close', async () => {
         try {
             await writer.close()
         } catch (e) {
-            // Already closed, ignore
+            // Already closed
         }
     })
 
