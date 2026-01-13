@@ -1,5 +1,6 @@
 import { IRequest, status, json } from 'itty-router'
 import { generateSignature, decrypt } from '../utils'
+import { coalescedFetch, isB2Url } from '../utils/coalesced-fetch'
 
 export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: Env) => {
     // // get signature from query and check if it exists
@@ -31,7 +32,50 @@ export const download = async ({ headers, cf, urlHASH, query }: IRequest, env: E
         const decodedURL = await decrypt(urlHASH.replace(/-/g, '+').replace(/_/g, '/'), env.SECRET, env.IV_SECRET)
         const url = new URL(decodedURL)
 
-        // Retry logic with proper variable scope
+        // Check if this is a B2 URL - use coalescing to prevent rate limiting
+        const useCoalescing = isB2Url(url.toString()) && query?.coalesce !== 'false'
+
+        if (useCoalescing) {
+            try {
+                // Use coalesced fetch through Durable Object
+                const coalescedHeaders = new Headers()
+                const rangeHeader = headers.get('range')
+                const ifNoneMatch = headers.get('if-none-match')
+                if (rangeHeader) coalescedHeaders.set('range', rangeHeader)
+                if (ifNoneMatch) coalescedHeaders.set('if-none-match', ifNoneMatch)
+
+                const response = await coalescedFetch({
+                    url: url.toString(),
+                    headers: coalescedHeaders,
+                    env
+                })
+
+                // Process the response (same as direct fetch path)
+                const contentDisposition = response.headers.get('content-disposition')
+                const headersObject = Object.fromEntries(response.headers.entries())
+
+                if (!contentDisposition?.includes('filename')) {
+                    const filename = url.pathname.split('/').pop() || 'download'
+                    const sanitizedFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '_')
+                    headersObject['content-disposition'] = `attachment; filename="${sanitizedFilename}"`
+                }
+
+                // Add header to indicate coalescing was used
+                headersObject['x-coalesced'] = 'true'
+
+                return new Response(response.body, {
+                    status: response.status,
+                    headers: new Headers(headersObject)
+                })
+
+            } catch (coalescingError) {
+                // If coalescing fails, fall back to direct fetch
+                console.error('Coalescing failed, falling back to direct fetch:', coalescingError)
+                // Continue to direct fetch below
+            }
+        }
+
+        // Direct fetch path (for R2 or as fallback)
         let response: Response | null = null
         const maxRetries = 2
 

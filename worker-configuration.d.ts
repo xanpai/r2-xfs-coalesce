@@ -3,4 +3,6 @@
 interface Env {
 	SECRET: string;
 	IV_SECRET: string;
+	// Durable Object binding for request coalescing
+	DOWNLOAD_COALESCER: DurableObjectNamespace;
 }

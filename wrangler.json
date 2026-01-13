@@ -1,11 +1,24 @@
-
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "node",
+  "name": "node-coalesce-test",
   "main": "src/index.ts",
   "compatibility_date": "2025-02-04",
   "observability": {
     "enabled": true
   },
-  "workers_dev": true
+  "workers_dev": true,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DOWNLOAD_COALESCER",
+        "class_name": "DownloadCoalescer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["DownloadCoalescer"]
+    }
+  ]
 }
