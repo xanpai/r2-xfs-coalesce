@@ -5,12 +5,9 @@
  * this DO ensures only ONE request goes to B2, and the response
  * is streamed to ALL waiting clients.
  *
- * Flow:
- * 1. Worker upgrades to WebSocket, passing B2 URL in query param
- * 2. DO groups WebSocket clients by URL
- * 3. First client for a URL triggers B2 fetch
- * 4. B2 response chunks are broadcast to all clients for that URL
- * 5. When complete, all clients receive "done" message and connection closes
+ * Protocol:
+ * - Control messages (headers/done/error): JSON text
+ * - Data chunks: Raw binary (ArrayBuffer)
  */
 
 interface FileSession {
@@ -123,8 +120,8 @@ export class DownloadCoalescer {
             session.responseStatus = response.status
             session.responseHeaders = Object.fromEntries(response.headers.entries())
 
-            // Broadcast headers to all clients
-            this.broadcastToSession(sessionKey, JSON.stringify({
+            // Broadcast headers to all clients (JSON text message)
+            this.broadcastText(sessionKey, JSON.stringify({
                 type: 'headers',
                 status: response.status,
                 headers: session.responseHeaders
@@ -134,10 +131,10 @@ export class DownloadCoalescer {
             if (!response.ok && response.status !== 206) {
                 const errorBody = await response.text()
                 session.error = errorBody
-                this.broadcastToSession(sessionKey, JSON.stringify({
+                this.broadcastText(sessionKey, JSON.stringify({
                     type: 'error',
                     status: response.status,
-                    message: errorBody
+                    message: errorBody.slice(0, 500) // Limit error message size
                 }))
                 this.closeSession(sessionKey)
                 return
@@ -146,64 +143,67 @@ export class DownloadCoalescer {
             // Stream the response body
             const reader = response.body?.getReader()
             if (!reader) {
-                this.broadcastToSession(sessionKey, JSON.stringify({
-                    type: 'done'
-                }))
+                this.broadcastText(sessionKey, JSON.stringify({ type: 'done' }))
                 this.closeSession(sessionKey)
                 return
             }
 
-            // Read and broadcast chunks
-            // WebSocket messages have size limits, so we chunk at 64KB
-            const CHUNK_SIZE = 64 * 1024
-
+            // Read and broadcast chunks as raw binary
             while (true) {
                 const { done, value } = await reader.read()
 
                 if (done) {
-                    // Signal completion
-                    this.broadcastToSession(sessionKey, JSON.stringify({
-                        type: 'done'
-                    }))
+                    // Signal completion with JSON text
+                    this.broadcastText(sessionKey, JSON.stringify({ type: 'done' }))
                     break
                 }
 
-                if (value) {
-                    // Split into smaller chunks if needed
-                    for (let i = 0; i < value.length; i += CHUNK_SIZE) {
-                        const chunk = value.slice(i, Math.min(i + CHUNK_SIZE, value.length))
-                        // Send as base64 to avoid binary encoding issues
-                        const base64Chunk = this.arrayBufferToBase64(chunk)
-                        this.broadcastToSession(sessionKey, JSON.stringify({
-                            type: 'chunk',
-                            data: base64Chunk
-                        }))
-                    }
+                if (value && value.length > 0) {
+                    // Send raw binary data - no base64, no JSON
+                    this.broadcastBinary(sessionKey, value)
                 }
             }
 
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error'
             session.error = errorMessage
-            this.broadcastToSession(sessionKey, JSON.stringify({
+            this.broadcastText(sessionKey, JSON.stringify({
                 type: 'error',
                 status: 500,
-                message: errorMessage
+                message: errorMessage.slice(0, 500)
             }))
         } finally {
             this.closeSession(sessionKey)
         }
     }
 
-    private broadcastToSession(sessionKey: string, message: string): void {
+    private broadcastText(sessionKey: string, message: string): void {
         const session = this.sessions.get(sessionKey)
         if (!session) return
 
-        // Broadcast to all clients, remove any that fail
         const toRemove: WebSocket[] = []
         for (const client of session.clients) {
             try {
                 client.send(message)
+            } catch (e) {
+                toRemove.push(client)
+            }
+        }
+
+        for (const client of toRemove) {
+            session.clients.delete(client)
+        }
+    }
+
+    private broadcastBinary(sessionKey: string, data: Uint8Array): void {
+        const session = this.sessions.get(sessionKey)
+        if (!session) return
+
+        const toRemove: WebSocket[] = []
+        for (const client of session.clients) {
+            try {
+                // Send as ArrayBuffer (binary WebSocket message)
+                client.send(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength))
             } catch (e) {
                 toRemove.push(client)
             }
@@ -221,7 +221,7 @@ export class DownloadCoalescer {
         // Close all client connections
         for (const client of session.clients) {
             try {
-                client.close(1000, 'Transfer complete')
+                client.close(1000, 'Complete')
             } catch (e) {
                 // Ignore close errors
             }
@@ -231,14 +231,6 @@ export class DownloadCoalescer {
         this.sessions.delete(sessionKey)
     }
 
-    private arrayBufferToBase64(buffer: Uint8Array): string {
-        let binary = ''
-        for (let i = 0; i < buffer.length; i++) {
-            binary += String.fromCharCode(buffer[i])
-        }
-        return btoa(binary)
-    }
-
     // Handle WebSocket close events
     async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
         const sessionKey = (ws as any).sessionKey
@@ -246,8 +238,6 @@ export class DownloadCoalescer {
             const session = this.sessions.get(sessionKey)
             if (session) {
                 session.clients.delete(ws)
-                // If no more clients, we could cancel the fetch
-                // but for simplicity we let it complete
             }
         }
     }
