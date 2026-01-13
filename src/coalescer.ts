@@ -18,6 +18,8 @@ interface FileSession {
     responseHeaders: Record<string, string> | null
     responseStatus: number | null
     error: string | null
+    startTime: number
+    totalClients: number  // Track total clients that ever joined (including those who left)
 }
 
 export class DownloadCoalescer {
@@ -51,6 +53,9 @@ export class DownloadCoalescer {
         // Create unique key for this specific request (URL + range)
         const sessionKey = `${b2Url}|${rangeHeader}`
 
+        // Extract filename for logging
+        const filename = this.extractFilename(b2Url)
+
         // Create WebSocket pair
         const webSocketPair = new WebSocketPair()
         const [client, server] = Object.values(webSocketPair)
@@ -65,6 +70,8 @@ export class DownloadCoalescer {
 
         // Get or create session for this URL
         let session = this.sessions.get(sessionKey)
+        const isNewSession = !session
+
         if (!session) {
             session = {
                 url: b2Url,
@@ -73,13 +80,23 @@ export class DownloadCoalescer {
                 fetchPromise: null,
                 responseHeaders: null,
                 responseStatus: null,
-                error: null
+                error: null,
+                startTime: Date.now(),
+                totalClients: 0
             }
             this.sessions.set(sessionKey, session)
         }
 
         // Add this client to the session
         session.clients.add(server)
+        session.totalClients++
+
+        // Log metrics
+        if (isNewSession) {
+            console.log(`[COALESCE:NEW] file="${filename}" clients=1 - Starting B2 fetch`)
+        } else {
+            console.log(`[COALESCE:JOIN] file="${filename}" clients=${session.totalClients} - Client joined existing session (B2 request SAVED)`)
+        }
 
         // If fetch already completed with headers, send them immediately
         if (session.responseHeaders && session.responseStatus) {
@@ -100,6 +117,16 @@ export class DownloadCoalescer {
             status: 101,
             webSocket: client
         })
+    }
+
+    private extractFilename(url: string): string {
+        try {
+            const urlObj = new URL(url)
+            const parts = urlObj.pathname.split('/')
+            return parts[parts.length - 1] || 'unknown'
+        } catch {
+            return 'unknown'
+        }
     }
 
     private async fetchAndBroadcast(sessionKey: string, b2Url: string, rangeHeader: string): Promise<void> {
@@ -134,7 +161,7 @@ export class DownloadCoalescer {
                 this.broadcastText(sessionKey, JSON.stringify({
                     type: 'error',
                     status: response.status,
-                    message: errorBody.slice(0, 500) // Limit error message size
+                    message: errorBody.slice(0, 500)
                 }))
                 this.closeSession(sessionKey)
                 return
@@ -217,6 +244,17 @@ export class DownloadCoalescer {
     private closeSession(sessionKey: string): void {
         const session = this.sessions.get(sessionKey)
         if (!session) return
+
+        // Log final metrics
+        const duration = ((Date.now() - session.startTime) / 1000).toFixed(1)
+        const filename = this.extractFilename(session.url)
+        const savedRequests = session.totalClients - 1
+
+        if (savedRequests > 0) {
+            console.log(`[COALESCE:DONE] file="${filename}" total_clients=${session.totalClients} b2_requests=1 saved_requests=${savedRequests} duration=${duration}s`)
+        } else {
+            console.log(`[COALESCE:DONE] file="${filename}" total_clients=1 b2_requests=1 saved_requests=0 duration=${duration}s`)
+        }
 
         // Close all client connections
         for (const client of session.clients) {
